@@ -10,7 +10,7 @@ import {
   SEED_PROJECTS
 } from './seedData';
 
-const DB_DIR = path.resolve(process.cwd(), 'data');
+const DB_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.resolve(process.cwd(), 'data');
 const DB_PATH = path.resolve(DB_DIR, 'sand_logistics.sqlite');
 
 let SQL: SqlJsStatic;
