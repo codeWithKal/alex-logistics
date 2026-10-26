@@ -5,7 +5,7 @@ import path from 'path';
 import { initDb } from './server/db.ts';
 import { apiRouter } from './server/routes.ts';
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 async function startServer() {
   await initDb();
