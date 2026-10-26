@@ -85,6 +85,28 @@ export const requireAdmin = (req: Request, res: Response, next: NextFunction) =>
   next();
 };
 
+// Audit Log Helper for administrative security & traceability
+export function recordAuditLog(
+  userId: string | null | undefined,
+  userName: string | null | undefined,
+  action: string,
+  entityType: string,
+  entityId: string,
+  details: string
+) {
+  try {
+    const auditId = `audit_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
+    execute(
+      `INSERT INTO audit_logs (id, user_id, user_name, action, entity_type, entity_id, details, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [auditId, userId || null, userName || 'System', action, entityType, entityId, details, now]
+    );
+  } catch (err) {
+    console.error('Failed to write audit log:', err);
+  }
+}
+
 // Apply auth parser across all API routes
 apiRouter.use(authenticate);
 
@@ -106,6 +128,10 @@ apiRouter.post('/auth/login', (req: Request, res: Response) => {
 
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: 'Invalid username or password' });
+  }
+
+  if (user.is_active !== undefined && Number(user.is_active) === 0) {
+    return res.status(403).json({ error: 'This account has been disabled. Please contact your system administrator.' });
   }
 
   const userData: AuthenticatedUser = {
@@ -163,6 +189,15 @@ apiRouter.post('/auth/register', (req: Request, res: Response) => {
     role: cleanRole,
     avatar_url: null
   };
+
+  recordAuditLog(
+    id,
+    full_name.trim(),
+    'REGISTER_USER',
+    'user',
+    id,
+    `New user self-registered account @${cleanUsername} with role "${cleanRole}".`
+  );
 
   const token = jwt.sign(userData, JWT_SECRET, { expiresIn: '7d' });
   res.cookie('sandtrack_token', token, { httpOnly: true, sameSite: 'lax', maxAge: 7 * 24 * 3600 * 1000 });
@@ -233,6 +268,15 @@ apiRouter.put('/auth/change-password', (req: Request, res: Response) => {
   const now = new Date().toISOString();
   execute('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?', [newHash, now, req.user.id]);
 
+  recordAuditLog(
+    req.user.id,
+    req.user.full_name,
+    'SELF_PASSWORD_CHANGE',
+    'user',
+    req.user.id,
+    `User @${req.user.username} successfully updated their own account password.`
+  );
+
   return res.json({ success: true, message: 'Password changed successfully' });
 });
 
@@ -244,48 +288,334 @@ apiRouter.post('/auth/logout', (_req: Request, res: Response) => {
 
 // Users list (Admin only)
 apiRouter.get('/users', requireAdmin, (_req: Request, res: Response) => {
-  const users = query<any>('SELECT id, username, email, full_name, role, avatar_url, created_at, updated_at FROM users ORDER BY created_at DESC');
+  const users = query<any>('SELECT id, username, email, full_name, role, avatar_url, COALESCE(is_active, 1) as is_active, created_at, updated_at FROM users ORDER BY created_at DESC');
   return res.json(users);
 });
 
 // Create new user (Admin only)
 apiRouter.post('/users', requireAdmin, (req: Request, res: Response) => {
-  const { username, email, password, full_name, role, avatar_url } = req.body;
+  const { username, email, password, full_name, role, avatar_url, is_active } = req.body;
   if (!username || !email || !password || !full_name || !role) {
-    return res.status(400).json({ error: 'All user fields are required' });
+    return res.status(400).json({ error: 'All user fields (username, email, password, full name, role) are required' });
   }
   if (!['admin', 'data_entry', 'viewer'].includes(role)) {
     return res.status(400).json({ error: 'Role must be admin, data_entry, or viewer' });
   }
+  if (password.trim().length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+  }
 
-  const existing = queryOne('SELECT id FROM users WHERE username = ? OR email = ?', [username.trim().toLowerCase(), email.trim().toLowerCase()]);
+  const cleanUsername = username.trim().toLowerCase();
+  const cleanEmail = email.trim().toLowerCase();
+
+  const existing = queryOne('SELECT id FROM users WHERE username = ? OR email = ?', [cleanUsername, cleanEmail]);
   if (existing) {
-    return res.status(409).json({ error: 'Username or email already exists' });
+    return res.status(409).json({ error: 'Username or email already exists in the system' });
   }
 
   const now = new Date().toISOString();
   const id = `usr_${Date.now()}`;
-  const password_hash = bcrypt.hashSync(password, 10);
+  const password_hash = bcrypt.hashSync(password.trim(), 10);
+  const activeState = is_active !== undefined ? (is_active ? 1 : 0) : 1;
 
   execute(
-    `INSERT INTO users (id, username, email, password_hash, full_name, role, avatar_url, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, username.trim().toLowerCase(), email.trim().toLowerCase(), password_hash, full_name.trim(), role, avatar_url || null, now, now]
+    `INSERT INTO users (id, username, email, password_hash, full_name, role, avatar_url, is_active, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, cleanUsername, cleanEmail, password_hash, full_name.trim(), role, avatar_url || null, activeState, now, now]
   );
 
-  return res.status(201).json({ id, username, email, full_name, role, avatar_url: avatar_url || null, created_at: now });
+  recordAuditLog(
+    req.user?.id,
+    req.user?.full_name,
+    'CREATE_USER',
+    'user',
+    id,
+    `Administrator created user account @${cleanUsername} (${full_name.trim()}) with role "${role}" and status "${activeState === 1 ? 'Active' : 'Disabled'}".`
+  );
+
+  return res.status(201).json({ id, username: cleanUsername, email: cleanEmail, full_name: full_name.trim(), role, avatar_url: avatar_url || null, is_active: activeState, created_at: now });
 });
 
-// Update user role (Admin only)
+// Full User Edit: Update username, full_name, email, role, avatar_url, optional password, is_active (Admin only)
+apiRouter.put('/users/:id', requireAdmin, (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { username, email, full_name, role, avatar_url, password, is_active } = req.body;
+
+  const target = queryOne<any>('SELECT * FROM users WHERE id = ?', [id]);
+  if (!target) {
+    return res.status(404).json({ error: 'User account not found' });
+  }
+
+  if (username && username.trim().toLowerCase() !== target.username) {
+    const existingU = queryOne('SELECT id FROM users WHERE username = ? AND id != ?', [username.trim().toLowerCase(), id]);
+    if (existingU) {
+      return res.status(409).json({ error: 'Username is already taken by another user' });
+    }
+  }
+
+  if (email && email.trim().toLowerCase() !== target.email) {
+    const existingE = queryOne('SELECT id FROM users WHERE email = ? AND id != ?', [email.trim().toLowerCase(), id]);
+    if (existingE) {
+      return res.status(409).json({ error: 'Email address is already in use by another user' });
+    }
+  }
+
+  if (role && !['admin', 'data_entry', 'viewer'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid role specified' });
+  }
+
+  // Prevent demoting or deactivating yourself
+  if (req.user && req.user.id === id) {
+    if (role && role !== 'admin') {
+      return res.status(400).json({ error: 'You cannot remove administrator privileges from your own active session.' });
+    }
+    if (is_active !== undefined && (is_active === 0 || is_active === false)) {
+      return res.status(400).json({ error: 'You cannot disable your own active administrator account.' });
+    }
+  }
+
+  const newUsername = username ? username.trim().toLowerCase() : target.username;
+  const newEmail = email ? email.trim().toLowerCase() : target.email;
+  const newFullName = full_name ? full_name.trim() : target.full_name;
+  const newRole = role || target.role;
+  const newAvatar = avatar_url !== undefined ? avatar_url : target.avatar_url;
+  const newIsActive = is_active !== undefined ? (is_active ? 1 : 0) : (target.is_active ?? 1);
+  const now = new Date().toISOString();
+
+  let passwordChanged = false;
+  let newPasswordHash = target.password_hash;
+  if (password && password.trim().length > 0) {
+    if (password.trim().length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+    }
+    newPasswordHash = bcrypt.hashSync(password.trim(), 10);
+    passwordChanged = true;
+  }
+
+  execute(
+    `UPDATE users SET
+       username = ?,
+       email = ?,
+       full_name = ?,
+       role = ?,
+       avatar_url = ?,
+       password_hash = ?,
+       is_active = ?,
+       updated_at = ?
+     WHERE id = ?`,
+    [newUsername, newEmail, newFullName, newRole, newAvatar, newPasswordHash, newIsActive, now, id]
+  );
+
+  const changes: string[] = [];
+  if (username && username.trim().toLowerCase() !== target.username) {
+    changes.push(`username: @${target.username} -> @${newUsername}`);
+  }
+  if (email && email.trim().toLowerCase() !== target.email) {
+    changes.push(`email: ${target.email} -> ${newEmail}`);
+  }
+  if (full_name && full_name.trim() !== target.full_name) {
+    changes.push(`name: "${target.full_name}" -> "${newFullName}"`);
+  }
+  if (role && role !== target.role) {
+    changes.push(`role: "${target.role}" -> "${newRole}"`);
+  }
+  if (is_active !== undefined && (is_active ? 1 : 0) !== (target.is_active ?? 1)) {
+    changes.push(`status: ${(target.is_active ?? 1) === 0 ? 'Disabled' : 'Active'} -> ${newIsActive === 1 ? 'Active' : 'Disabled'}`);
+  }
+  if (passwordChanged) {
+    changes.push('password reset');
+  }
+
+  const auditDetails = changes.length > 0
+    ? `Administrator updated user @${target.username}: ${changes.join(', ')}`
+    : `Administrator updated profile details for user @${target.username}`;
+
+  recordAuditLog(
+    req.user?.id,
+    req.user?.full_name,
+    'UPDATE_USER',
+    'user',
+    id,
+    auditDetails
+  );
+
+  const updated = queryOne<any>('SELECT id, username, email, full_name, role, avatar_url, is_active, created_at, updated_at FROM users WHERE id = ?', [id]);
+  return res.json(updated);
+});
+
+// Update user role quickly (Admin only)
 apiRouter.put('/users/:id/role', requireAdmin, (req: Request, res: Response) => {
   const { id } = req.params;
   const { role } = req.body;
   if (!['admin', 'data_entry', 'viewer'].includes(role)) {
     return res.status(400).json({ error: 'Invalid role' });
   }
+  if (req.user && req.user.id === id && role !== 'admin') {
+    return res.status(400).json({ error: 'You cannot demote your own administrator account.' });
+  }
+
+  const target = queryOne<any>('SELECT id, username, role, full_name FROM users WHERE id = ?', [id]);
+  if (!target) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
   const now = new Date().toISOString();
   execute('UPDATE users SET role = ?, updated_at = ? WHERE id = ?', [role, now, id]);
+
+  recordAuditLog(
+    req.user?.id,
+    req.user?.full_name,
+    'CHANGE_ROLE',
+    'user',
+    id,
+    `Administrator changed role for user @${target.username} from "${target.role}" to "${role}".`
+  );
+
   return res.json({ success: true, id, role });
+});
+
+// Admin Reset Password for any user (Admin only)
+apiRouter.put('/users/:id/password', requireAdmin, (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { password } = req.body;
+  if (!password || password.trim().length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+  }
+  const target = queryOne<any>('SELECT id, username, full_name FROM users WHERE id = ?', [id]);
+  if (!target) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  const hash = bcrypt.hashSync(password.trim(), 10);
+  const now = new Date().toISOString();
+  execute('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?', [hash, now, id]);
+
+  recordAuditLog(
+    req.user?.id,
+    req.user?.full_name,
+    'RESET_PASSWORD',
+    'user',
+    id,
+    `Administrator reset password for user @${target.username} (${target.full_name || target.username}).`
+  );
+
+  return res.json({ success: true, message: `Password for ${target.username} updated successfully` });
+});
+
+// Enable / Disable user (Admin only)
+apiRouter.put('/users/:id/status', requireAdmin, (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { is_active } = req.body;
+  if (req.user && req.user.id === id && (is_active === 0 || is_active === false)) {
+    return res.status(400).json({ error: 'You cannot disable your own active account.' });
+  }
+  const target = queryOne<any>('SELECT id, username, full_name FROM users WHERE id = ?', [id]);
+  if (!target) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  const activeState = (is_active === 1 || is_active === true) ? 1 : 0;
+  const now = new Date().toISOString();
+  execute('UPDATE users SET is_active = ?, updated_at = ? WHERE id = ?', [activeState, now, id]);
+
+  const actionName = activeState === 1 ? 'ENABLE_USER' : 'DISABLE_USER';
+  recordAuditLog(
+    req.user?.id,
+    req.user?.full_name,
+    actionName,
+    'user',
+    id,
+    `Administrator ${activeState === 1 ? 'enabled (activated)' : 'disabled (deactivated)'} access for user @${target.username} (${target.full_name || target.username}).`
+  );
+
+  return res.json({ success: true, id, is_active: activeState, message: `User ${target.username} is now ${activeState === 1 ? 'Enabled' : 'Disabled'}.` });
+});
+
+// Delete user from system (Admin only)
+apiRouter.delete('/users/:id', requireAdmin, (req: Request, res: Response) => {
+  const { id } = req.params;
+  if (req.user && req.user.id === id) {
+    return res.status(400).json({ error: 'You cannot delete your own active administrator account.' });
+  }
+  const target = queryOne<any>('SELECT id, username, full_name, role FROM users WHERE id = ?', [id]);
+  if (!target) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  execute('DELETE FROM users WHERE id = ?', [id]);
+
+  recordAuditLog(
+    req.user?.id,
+    req.user?.full_name,
+    'DELETE_USER',
+    'user',
+    id,
+    `Administrator permanently deleted user account @${target.username} (${target.full_name}, ${target.role}).`
+  );
+
+  return res.json({ success: true, id, message: `User account "${target.username}" has been permanently deleted from the system.` });
+});
+
+// Activity & Security Audit Logs (Admin only)
+apiRouter.get('/audit-logs', requireAdmin, (req: Request, res: Response) => {
+  const {
+    entity_type,
+    action,
+    search,
+    limit = 100,
+    offset = 0
+  } = req.query;
+
+  const whereClauses: string[] = [];
+  const params: any[] = [];
+
+  if (entity_type && entity_type !== 'all') {
+    whereClauses.push('entity_type = ?');
+    params.push(String(entity_type));
+  }
+
+  if (action && action !== 'all') {
+    whereClauses.push('action = ?');
+    params.push(String(action));
+  }
+
+  if (search && String(search).trim()) {
+    const s = `%${String(search).trim()}%`;
+    whereClauses.push('(user_name LIKE ? OR action LIKE ? OR details LIKE ? OR entity_id LIKE ?)');
+    params.push(s, s, s, s);
+  }
+
+  const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+  const totalRes = queryOne<any>(`SELECT COUNT(*) as total FROM audit_logs ${whereSql}`, params);
+  const total = totalRes?.total || 0;
+
+  const parsedLimit = Math.min(Math.max(1, Number(limit) || 100), 500);
+  const parsedOffset = Math.max(0, Number(offset) || 0);
+
+  const logs = query<any>(
+    `SELECT * FROM audit_logs ${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+    [...params, parsedLimit, parsedOffset]
+  );
+
+  const summaryRes = query<any>(`
+    SELECT
+      COUNT(*) as total_events,
+      SUM(CASE WHEN action IN ('RESET_PASSWORD', 'SELF_PASSWORD_CHANGE') THEN 1 ELSE 0 END) as password_events,
+      SUM(CASE WHEN action IN ('ENABLE_USER', 'DISABLE_USER') THEN 1 ELSE 0 END) as status_events,
+      SUM(CASE WHEN action IN ('CREATE_USER', 'REGISTER_USER', 'DELETE_USER') THEN 1 ELSE 0 END) as lifecycle_events,
+      SUM(CASE WHEN action IN ('UPDATE_USER', 'CHANGE_ROLE') THEN 1 ELSE 0 END) as edit_events
+    FROM audit_logs
+    WHERE entity_type = 'user'
+  `)[0] || {};
+
+  return res.json({
+    logs,
+    total,
+    summary: {
+      totalUserEvents: Number(summaryRes.total_events || 0),
+      passwordEvents: Number(summaryRes.password_events || 0),
+      statusEvents: Number(summaryRes.status_events || 0),
+      lifecycleEvents: Number(summaryRes.lifecycle_events || 0),
+      editEvents: Number(summaryRes.edit_events || 0)
+    }
+  });
 });
 
 // ==========================================

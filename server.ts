@@ -2,6 +2,7 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import { initDb } from './server/db.ts';
 import { apiRouter } from './server/routes.ts';
 
@@ -20,17 +21,21 @@ async function startServer() {
   app.use('/api', apiRouter);
 
   const isProd = process.env.NODE_ENV === 'production';
-  if (!isProd) {
+  const distPath = path.resolve(process.cwd(), 'dist');
+  const distIndex = path.resolve(distPath, 'index.html');
+
+  if (isProd && fs.existsSync(distIndex)) {
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(distIndex);
+    });
+  } else {
+    // If not production or dist not built yet, mount Vite middleware
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
-    app.use(express.static(path.resolve(process.cwd(), 'dist')));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(process.cwd(), 'dist/index.html'));
-    });
   }
 
   app.listen(PORT, '0.0.0.0', () => {

@@ -12,7 +12,9 @@ import {
   SpecificCompanyDossier,
   FinancialReportData,
   RouteTariff,
-  TruckTransportPivotData
+  TruckTransportPivotData,
+  AuditLog,
+  AuditLogResponse
 } from '../types';
 
 class ApiError extends Error {
@@ -118,6 +120,51 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ role }),
     });
+  },
+
+  async updateUser(id: string, user: Partial<User> & { password?: string }): Promise<User> {
+    return request<User>(`/users/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(user),
+    });
+  },
+
+  async updateUserPassword(id: string, password: string): Promise<{ success: boolean; message: string }> {
+    return request<{ success: boolean; message: string }>(`/users/${id}/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ password }),
+    });
+  },
+
+  async toggleUserStatus(id: string, is_active: number): Promise<{ success: boolean; id: string; is_active: number; message: string }> {
+    return request<{ success: boolean; id: string; is_active: number; message: string }>(`/users/${id}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ is_active }),
+    });
+  },
+
+  async deleteUser(id: string): Promise<{ success: boolean; id: string; message: string }> {
+    return request<{ success: boolean; id: string; message: string }>(`/users/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // Audit Logs (Admin only)
+  async getAuditLogs(params?: {
+    entity_type?: string;
+    action?: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<AuditLogResponse> {
+    const queryParts: string[] = [];
+    if (params?.entity_type) queryParts.push(`entity_type=${encodeURIComponent(params.entity_type)}`);
+    if (params?.action) queryParts.push(`action=${encodeURIComponent(params.action)}`);
+    if (params?.search) queryParts.push(`search=${encodeURIComponent(params.search)}`);
+    if (params?.limit !== undefined) queryParts.push(`limit=${params.limit}`);
+    if (params?.offset !== undefined) queryParts.push(`offset=${params.offset}`);
+    const qs = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
+    return request<AuditLogResponse>(`/audit-logs${qs}`);
   },
 
   // Trucks

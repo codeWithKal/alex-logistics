@@ -13,6 +13,60 @@ import {
 const DB_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.resolve(process.cwd(), 'data');
 const DB_PATH = path.resolve(DB_DIR, 'sand_logistics.sqlite');
 
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+const STORAGE_BUCKET = process.env.STORAGE_BUCKET || 'sandtrack-db';
+
+async function downloadCloudBackup(): Promise<boolean> {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return false;
+  try {
+    const cleanUrl = SUPABASE_URL.replace(/\/$/, '');
+    const url = `${cleanUrl}/storage/v1/object/authenticated/${STORAGE_BUCKET}/sand_logistics.sqlite`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${SUPABASE_KEY}` },
+    });
+    if (res.ok) {
+      const arrayBuffer = await res.arrayBuffer();
+      if (arrayBuffer.byteLength > 0) {
+        fs.writeFileSync(DB_PATH, Buffer.from(arrayBuffer));
+        console.log('Successfully restored SQLite database from Supabase cloud storage.');
+        return true;
+      }
+    }
+  } catch (err) {
+    console.warn('Could not fetch cloud database backup from Supabase:', err);
+  }
+  return false;
+}
+
+let uploadTimeout: NodeJS.Timeout | null = null;
+function uploadCloudBackup() {
+  if (!SUPABASE_URL || !SUPABASE_KEY || !db) return;
+  if (uploadTimeout) clearTimeout(uploadTimeout);
+  uploadTimeout = setTimeout(async () => {
+    try {
+      const data = db.export();
+      const buffer = Buffer.from(data);
+      const cleanUrl = SUPABASE_URL.replace(/\/$/, '');
+      const url = `${cleanUrl}/storage/v1/object/${STORAGE_BUCKET}/sand_logistics.sqlite`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+          'x-upsert': 'true',
+          'Content-Type': 'application/x-sqlite3',
+        },
+        body: buffer,
+      });
+      if (res.ok) {
+        console.log('Backed up SQLite database to Supabase cloud storage.');
+      }
+    } catch (err) {
+      console.warn('Failed to upload cloud database backup:', err);
+    }
+  }, 1000);
+}
+
 let SQL: SqlJsStatic;
 let db: Database;
 
@@ -20,6 +74,9 @@ export async function initDb() {
   if (!fs.existsSync(DB_DIR)) {
     fs.mkdirSync(DB_DIR, { recursive: true });
   }
+
+  // Restore from free cloud storage if configured
+  await downloadCloudBackup();
 
   SQL = await initSqlJs();
 
@@ -30,8 +87,8 @@ export async function initDb() {
     db = new SQL.Database();
   }
 
-  // Enable foreign keys
-  db.run('PRAGMA foreign_keys = ON;');
+  // Disable foreign keys during startup schema migrations and seeding
+  db.run('PRAGMA foreign_keys = OFF;');
 
   // Create tables
   createTables();
@@ -42,6 +99,10 @@ export async function initDb() {
   migrateRouteTransportFees();
   migrateCrusherOnlyAndProjectDestinations();
   seedEthiopianSampleData();
+  migrateInitialUserAuditLogs();
+
+  // Re-enable foreign keys for operations
+  db.run('PRAGMA foreign_keys = ON;');
   saveDb();
 
   return db;
@@ -52,6 +113,7 @@ export function saveDb() {
   const data = db.export();
   const buffer = Buffer.from(data);
   fs.writeFileSync(DB_PATH, buffer);
+  uploadCloudBackup();
 }
 
 function createTables() {
@@ -64,6 +126,7 @@ function createTables() {
       full_name TEXT NOT NULL,
       role TEXT NOT NULL CHECK(role IN ('admin', 'data_entry', 'viewer')),
       avatar_url TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -726,8 +789,11 @@ function migrateUserAvatar() {
     if (!userCols.includes('avatar_url')) {
       db.run('ALTER TABLE users ADD COLUMN avatar_url TEXT');
     }
+    if (!userCols.includes('is_active')) {
+      db.run('ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1');
+    }
   } catch (err) {
-    console.error('Migration error on user avatar:', err);
+    console.error('Migration error on user avatar/is_active:', err);
   }
 }
 
@@ -1292,6 +1358,74 @@ export function seedEthiopianSampleData() {
     console.log('Successfully seeded Ethiopian Logistics sample dataset!');
   } catch (err) {
     console.error('Error seeding Ethiopian sample dataset:', err);
+  }
+}
+
+export function migrateInitialUserAuditLogs() {
+  if (!db) return;
+  try {
+    const existing = queryOne<any>("SELECT COUNT(*) as count FROM audit_logs WHERE entity_type = 'user'");
+    if (existing && Number(existing.count) > 0) return;
+
+    const now = new Date();
+    const dStr = (minutesAgo: number) => {
+      const d = new Date(now.getTime() - minutesAgo * 60 * 1000);
+      return d.toISOString();
+    };
+
+    const initialAuditRecords = [
+      {
+        id: 'audit_init_usr_01',
+        user_id: 'usr_admin',
+        user_name: 'System Administrator',
+        action: 'CREATE_USER',
+        entity_type: 'user',
+        entity_id: 'usr_admin',
+        details: 'System Administrator super-user account initialized with administrative security access.',
+        created_at: dStr(180)
+      },
+      {
+        id: 'audit_init_usr_02',
+        user_id: 'usr_admin',
+        user_name: 'System Administrator',
+        action: 'CREATE_USER',
+        entity_type: 'user',
+        entity_id: 'usr_operator',
+        details: 'Administrator created user account @operator (Elena Vance) with role "data_entry" and status "Active".',
+        created_at: dStr(120)
+      },
+      {
+        id: 'audit_init_usr_03',
+        user_id: 'usr_admin',
+        user_name: 'System Administrator',
+        action: 'CREATE_USER',
+        entity_type: 'user',
+        entity_id: 'usr_viewer',
+        details: 'Administrator created user account @viewer (Marcus Brody) with role "viewer" and status "Active".',
+        created_at: dStr(90)
+      },
+      {
+        id: 'audit_init_usr_04',
+        user_id: 'usr_admin',
+        user_name: 'System Administrator',
+        action: 'ENABLE_USER',
+        entity_type: 'user',
+        entity_id: 'usr_operator',
+        details: 'Administrator verified and enabled active status for dispatcher account @operator.',
+        created_at: dStr(60)
+      }
+    ];
+
+    for (const r of initialAuditRecords) {
+      db.run(
+        `INSERT INTO audit_logs (id, user_id, user_name, action, entity_type, entity_id, details, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [r.id, r.user_id, r.user_name, r.action, r.entity_type, r.entity_id, r.details, r.created_at]
+      );
+    }
+    saveDb();
+  } catch (err) {
+    console.error('migrateInitialUserAuditLogs error:', err);
   }
 }
 

@@ -18,8 +18,34 @@ export interface User {
   full_name: string;
   role: UserRole;
   avatar_url?: string | null;
+  is_active?: number;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface AuditLog {
+  id: string;
+  user_id: string | null;
+  user_name: string | null;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  details: string | null;
+  created_at: string;
+}
+
+export interface AuditLogSummary {
+  totalUserEvents: number;
+  passwordEvents: number;
+  statusEvents: number;
+  lifecycleEvents: number;
+  editEvents: number;
+}
+
+export interface AuditLogResponse {
+  logs: AuditLog[];
+  total: number;
+  summary: AuditLogSummary;
 }
 
 export interface Truck {
