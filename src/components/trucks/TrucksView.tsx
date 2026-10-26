@@ -8,7 +8,8 @@ import {
   X,
   Phone,
   PhoneCall,
-  Truck as TruckIcon
+  Truck as TruckIcon,
+  DollarSign
 } from 'lucide-react';
 import { Truck, Trip } from '../../types';
 import { api } from '../../lib/api';
@@ -16,9 +17,10 @@ import { useAuth } from '../../context/AuthContext';
 
 interface TrucksViewProps {
   onNavigateToTruckDossier?: (truckId: string) => void;
+  onNavigateToPivotReport?: () => void;
 }
 
-export const TrucksView: React.FC<TrucksViewProps> = ({ onNavigateToTruckDossier }) => {
+export const TrucksView: React.FC<TrucksViewProps> = ({ onNavigateToTruckDossier, onNavigateToPivotReport }) => {
   const { canEdit } = useAuth();
   const [trucks, setTrucks] = useState<Truck[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -180,6 +182,16 @@ export const TrucksView: React.FC<TrucksViewProps> = ({ onNavigateToTruckDossier
           </div>
         </div>
         <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+          {onNavigateToPivotReport && (
+            <button
+              onClick={onNavigateToPivotReport}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-emerald-950 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded transition-colors shadow-2xs whitespace-nowrap cursor-pointer"
+              title="View Hired Trucks Trip History & Calculated Transport Fees Pivoted by Plate"
+            >
+              <DollarSign className="w-4 h-4 text-emerald-700" />
+              <span>Trip History &amp; Fees Pivot</span>
+            </button>
+          )}
           <button
             onClick={() => onNavigateToTruckDossier?.('all')}
             className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-800 bg-amber-50 hover:bg-amber-100 border border-amber-300 rounded transition-colors shadow-2xs whitespace-nowrap cursor-pointer"

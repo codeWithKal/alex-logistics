@@ -56,6 +56,9 @@ function MainApp() {
   const navigateToReports = (reportName?: string, extraParams?: { truck_id?: string; company_id?: string }) => {
     if (reportName) {
       const map: Record<string, ReportType> = {
+        'truck_transport_pivot': 'truck_transport_pivot',
+        'truck_pivot': 'truck_transport_pivot',
+        'truck_fees': 'truck_transport_pivot',
         'truck_dossier': 'truck_dossier',
         'trucks': 'truck_performance',
         'truck_performance': 'truck_performance',
@@ -140,7 +143,10 @@ function MainApp() {
           )}
 
           {activeTab === 'trucks' && (
-            <TrucksView onNavigateToTruckDossier={navigateToTruckDossier} />
+            <TrucksView
+              onNavigateToTruckDossier={navigateToTruckDossier}
+              onNavigateToPivotReport={() => navigateToReports('truck_transport_pivot')}
+            />
           )}
 
           {activeTab === 'companies' && (

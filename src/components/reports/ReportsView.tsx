@@ -33,12 +33,14 @@ import {
   exportToPdf,
   exportTruckDossierPdf,
   exportRegisteredTripsAndTrucksPdf,
+  exportTruckTransportPivotPdf,
   ExportColumn
 } from '../../lib/exportUtils';
 import { CompanyDetailModal } from '../companies/CompanyDetailModal';
 import { ProjectDetailModal } from '../projects/ProjectDetailModal';
 import { CrusherDetailModal } from '../locations/CrusherDetailModal';
 import { TripDetailModal } from '../trips/TripDetailModal';
+import { TruckTransportPivotReportView } from './TruckTransportPivotReportView';
 import {
   Truck,
   ConstructionCompany,
@@ -47,10 +49,12 @@ import {
   TripStatus,
   SpecificTruckDossier,
   SpecificCompanyDossier,
-  FinancialReportData
+  FinancialReportData,
+  TruckTransportPivotData
 } from '../../types';
 
 export type ReportType =
+  | 'truck_transport_pivot'
   | 'trips_and_trucks'
   | 'financial'
   | 'truck_dossier'
@@ -113,6 +117,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const [companyDossier, setCompanyDossier] = useState<SpecificCompanyDossier | null>(null);
   // Financial & Transport Report Data
   const [financialData, setFinancialData] = useState<FinancialReportData | null>(null);
+  // Hired Trucks & Transport Fees Pivot State
+  const [pivotData, setPivotData] = useState<TruckTransportPivotData | null>(null);
 
   const [isLoading, setIsLoading] = useState(true);
 
@@ -184,6 +190,14 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       sand_type: (selectedSandType as SandType) || undefined,
       status: (selectedStatus as TripStatus) || undefined,
     };
+
+    if (activeReport === 'truck_transport_pivot') {
+      api.getTruckTransportPivotReport(filters)
+        .then(setPivotData)
+        .catch(err => console.error('Failed to load truck transport pivot report', err))
+        .finally(() => setIsLoading(false));
+      return;
+    }
 
     if (activeReport === 'trips_and_trucks') {
       Promise.all([
@@ -453,6 +467,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
 
   const getReportTitle = () => {
     switch (activeReport) {
+      case 'truck_transport_pivot':
+        return 'Hired Trucks Trip History & Calculated Transport Fees (Pivoted by Truck Plate)';
       case 'trips_and_trucks':
         return 'Report: Registered Trips & Hired Truck Performance (Unified Ledger)';
       case 'financial':
@@ -550,6 +566,78 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
 
   // Handle CSV/Spreadsheet and PDF exports
   const handleExportCsv = () => {
+    if (activeReport === 'truck_transport_pivot' && pivotData) {
+      const csvRows: any[] = [];
+      pivotData.truckGroups.forEach((group) => {
+        const rawTrips = group.trips || [];
+        const routeMap = new Map<string, any[]>();
+        rawTrips.forEach((t) => {
+          const loading = (t.loading_location_name || '-').trim();
+          const comp = (t.company_name || '-').trim();
+          const dest = ((t.project_name && t.project_name !== '-') ? t.project_name : (t.unloading_location_name || '-')).trim();
+          const key = `${loading}__${comp}__${dest}`;
+          if (!routeMap.has(key)) routeMap.set(key, []);
+          routeMap.get(key)!.push(t);
+        });
+
+        routeMap.forEach((tripsInGroup) => {
+          const subtotal = tripsInGroup.reduce((sum, tr) => sum + (Number(tr.individual_transport_fee_etb) || 0), 0);
+          tripsInGroup.forEach((tr) => {
+            let timeStr = '10:00:00 PM';
+            try {
+              const rawTime = tr.loading_datetime || tr.created_at;
+              if (rawTime) {
+                const dt = new Date(rawTime);
+                if (!isNaN(dt.getTime())) {
+                  timeStr = dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+                }
+              }
+            } catch {
+              timeStr = '10:00:00 PM';
+            }
+
+            const sandGrade = (tr.sand_type === '00' ? '0' : tr.sand_type === '01' ? '1' : tr.sand_type === '02' ? '2' : (tr.sand_type || '0'));
+
+            csvRows.push({
+              truck_plate: group.truck_plate,
+              truck_owner: group.truck_owner,
+              total_trips: rawTrips.length,
+              loading_location_name: tr.loading_location_name,
+              company_name: tr.company_name,
+              destination_project: (tr.project_name && tr.project_name !== '-') ? tr.project_name : tr.unloading_location_name,
+              number_of_trips: tripsInGroup.length,
+              trip_date: tr.trip_date,
+              loading_time: timeStr,
+              sand_type: sandGrade,
+              quantity_loaded_m3: Number(tr.quantity_loaded_m3 || 0).toFixed(2),
+              individual_price: Number(tr.individual_transport_fee_etb || 0),
+              subtotal_price: subtotal,
+              grand_total: group.calculated_total_transport_fee_etb
+            });
+          });
+        });
+      });
+
+      const cols: ExportColumn[] = [
+        { header: 'Truck Plate', key: 'truck_plate' },
+        { header: 'Truck Owner', key: 'truck_owner' },
+        { header: 'Total Trips', key: 'total_trips' },
+        { header: 'Loading Point', key: 'loading_location_name' },
+        { header: 'Company', key: 'company_name' },
+        { header: 'Destination Project', key: 'destination_project' },
+        { header: 'Number of Trips', key: 'number_of_trips' },
+        { header: 'Date', key: 'trip_date' },
+        { header: 'Loading Time', key: 'loading_time' },
+        { header: 'Sand Type', key: 'sand_type' },
+        { header: 'Loaded (m³)', key: 'quantity_loaded_m3' },
+        { header: 'Individual Price', key: 'individual_price', format: (v) => Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 }) },
+        { header: 'Subtotal price', key: 'subtotal_price', format: (v) => Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 }) },
+        { header: 'Grand Total', key: 'grand_total', format: (v) => Number(v || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 }) },
+      ];
+      exportToCsv(`hired_trucks_transport_fees_pivot_${new Date().toISOString().split('T')[0]}`, cols, csvRows);
+      return;
+    }
+
     if (activeReport === 'trips_and_trucks') {
       if (tripsAndTrucksMode === 'matrix') {
         const cols: ExportColumn[] = [
@@ -653,6 +741,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   };
 
   const handleExportPdf = () => {
+    if (activeReport === 'truck_transport_pivot' && pivotData) {
+      exportTruckTransportPivotPdf(pivotData.truckGroups, pivotData.kpis, getFilterSummary());
+      return;
+    }
+
     if (activeReport === 'trips_and_trucks') {
       const totTrips = registeredTripsList.length;
       const totLoaded = registeredTripsList.reduce((acc, t) => acc + (Number(t.quantity_loaded_m3) || 0), 0);
@@ -719,6 +812,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   };
 
   const reportTabs: Array<{ id: ReportType; label: string; badge?: string; icon: any }> = [
+    { id: 'truck_transport_pivot', label: 'Hired Trucks & Fees Pivot', badge: 'Truck Pivot & Fees', icon: TruckIcon },
     { id: 'trips_and_trucks', label: 'Registered Trips & Truck Performance', badge: 'Premier Overview', icon: TruckIcon },
     { id: 'financial', label: 'Financial & Transport Fees', badge: 'ETB & Tariffs', icon: DollarSign },
     { id: 'truck_dossier', label: 'Trucks Report (All in Once / Specific)', badge: 'All & Single', icon: TruckIcon },
@@ -992,6 +1086,21 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           )}
         </div>
       </div>
+
+      {/* ======================================================== */}
+      {/* PREMIER VIEW: HIRED TRUCKS TRIP HISTORY & TRANSPORT FEES PIVOT */}
+      {/* ======================================================== */}
+      {activeReport === 'truck_transport_pivot' && (
+        <TruckTransportPivotReportView
+          data={pivotData}
+          isLoading={isLoading}
+          onOpenTripModal={(id) => setViewingTripId(id)}
+          onOpenTruckDossier={(id) => {
+            setSelectedTruckId(id);
+            setActiveReport('truck_dossier');
+          }}
+        />
+      )}
 
       {/* ======================================================== */}
       {/* PREMIER VIEW: REGISTERED TRIPS & TRUCK PERFORMANCE       */}

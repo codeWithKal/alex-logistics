@@ -513,3 +513,73 @@ export interface FinancialReportData {
   }>;
   trips: Trip[];
 }
+
+export interface TruckPivotTrip {
+  id: string;
+  trip_date: string;
+  truck_id: string;
+  truck_plate: string;
+  truck_owner: string;
+  loading_location_id: string;
+  loading_location_name: string;
+  loading_datetime?: string | null;
+  unloading_location_id: string;
+  unloading_location_name: string;
+  company_id: string;
+  company_name: string;
+  project_id?: string;
+  project_name?: string;
+  sand_type: SandType;
+  quantity_loaded_m3: number;
+  quantity_delivered_m3: number;
+  quantity_remaining_m3: number;
+  status: TripStatus;
+  status_reason?: string;
+  delivery_outcome?: string;
+  delivery_proof_ref?: string;
+  individual_transport_fee_etb: number;
+  transport_rate_etb_per_m3?: number;
+  calculated_total_transport_fee_etb?: number;
+  truck_capacity_m3?: number | null;
+  owner_phone?: string | null;
+  truck_total_trips?: number;
+  truck_total_delivered_m3?: number;
+  created_at: string;
+}
+
+export interface TruckPivotGroup {
+  truck_id: string;
+  truck_plate: string;
+  truck_owner: string;
+  owner_phone?: string | null;
+  capacity_m3: number | null;
+  is_active: number;
+  total_trips: number;
+  calculated_total_transport_fee_etb: number;
+  total_delivered_m3: number;
+  total_loaded_m3: number;
+  total_shortage_m3?: number;
+  successful_trips: number;
+  partial_trips?: number;
+  unsuccessful_trips?: number;
+  cancelled_trips: number;
+  pending_trips?: number;
+  trips: TruckPivotTrip[];
+}
+
+export interface TruckTransportPivotData {
+  kpis: {
+    totalHiredTrucks: number;
+    totalTrips: number;
+    totalTransportFeesEtb: number;
+    avgFeePerTruckEtb: number;
+    avgFeePerTripEtb: number;
+    totalDeliveredM3: number;
+    totalLoadedM3: number;
+    successfulTrips: number;
+    partialTrips: number;
+    cancelledTrips: number;
+  };
+  truckGroups: TruckPivotGroup[];
+  allTripsFlat: TruckPivotTrip[];
+}

@@ -2833,3 +2833,131 @@ apiRouter.get('/reports/financial', (req: Request, res: Response) => {
     trips
   });
 });
+
+// ------------------------------------------
+// Hired Trucks & Trip History with Transport Fees Pivot Report
+// ------------------------------------------
+apiRouter.get('/reports/truck-transport-pivot', (req: Request, res: Response) => {
+  const { whereSql, params } = buildReportFilter(req);
+
+  // 1. Overall KPIs across filtered trips
+  const kpiRes = queryOne<any>(`
+    SELECT
+      COUNT(DISTINCT tr.truck_id) as total_hired_trucks,
+      COUNT(tr.id) as total_trips,
+      ROUND(COALESCE(SUM(tr.total_transport_fee_etb), 0), 2) as total_transport_fees_etb,
+      ROUND(COALESCE(SUM(tr.quantity_delivered_m3), 0), 2) as total_delivered_m3,
+      ROUND(COALESCE(SUM(tr.quantity_loaded_m3), 0), 2) as total_loaded_m3,
+      SUM(CASE WHEN tr.status = 'Delivered' THEN 1 ELSE 0 END) as successful_trips,
+      SUM(CASE WHEN tr.status = 'Partially Delivered' THEN 1 ELSE 0 END) as partial_trips,
+      SUM(CASE WHEN tr.status = 'Cancelled' THEN 1 ELSE 0 END) as cancelled_trips
+    FROM trips tr
+    WHERE ${whereSql}
+  `, params);
+
+  // 2. Aggregate per truck: Pivoted summary around truck plate number
+  const truckGroupsRaw = query<any>(`
+    SELECT
+      t.id as truck_id,
+      t.plate_number as truck_plate,
+      t.owner_name as truck_owner,
+      t.owner_phone,
+      t.capacity_m3,
+      t.is_active,
+      COUNT(tr.id) as total_trips,
+      ROUND(COALESCE(SUM(tr.total_transport_fee_etb), 0), 2) as calculated_total_transport_fee_etb,
+      ROUND(COALESCE(SUM(tr.quantity_delivered_m3), 0), 2) as total_delivered_m3,
+      ROUND(COALESCE(SUM(tr.quantity_loaded_m3), 0), 2) as total_loaded_m3,
+      ROUND(COALESCE(SUM(tr.quantity_remaining_m3), 0), 2) as total_shortage_m3,
+      SUM(CASE WHEN tr.status = 'Delivered' THEN 1 ELSE 0 END) as successful_trips,
+      SUM(CASE WHEN tr.status = 'Partially Delivered' THEN 1 ELSE 0 END) as partial_trips,
+      SUM(CASE WHEN tr.status = 'Unsuccessful' THEN 1 ELSE 0 END) as unsuccessful_trips,
+      SUM(CASE WHEN tr.status = 'Cancelled' THEN 1 ELSE 0 END) as cancelled_trips,
+      SUM(CASE WHEN tr.status IN ('Registered', 'Loading', 'Loaded / In Transit') THEN 1 ELSE 0 END) as pending_trips
+    FROM trucks t
+    INNER JOIN trips tr ON t.id = tr.truck_id
+    WHERE ${whereSql}
+    GROUP BY t.id
+    ORDER BY calculated_total_transport_fee_etb DESC, total_trips DESC, t.plate_number ASC
+  `, params);
+
+  // 3. Itemized multiple rows of trip history
+  const allTrips = query<any>(`
+    SELECT
+      tr.id,
+      tr.trip_date,
+      tr.truck_id,
+      tr.truck_plate,
+      tr.truck_owner,
+      tr.loading_location_id,
+      tr.loading_location_name,
+      tr.unloading_location_id,
+      tr.unloading_location_name,
+      tr.company_id,
+      tr.company_name,
+      tr.project_id,
+      COALESCE(tr.project_name, '-') as project_name,
+      tr.sand_type,
+      tr.quantity_loaded_m3,
+      tr.quantity_delivered_m3,
+      tr.quantity_remaining_m3,
+      tr.status,
+      tr.status_reason,
+      tr.delivery_outcome,
+      tr.delivery_proof_ref,
+      COALESCE(tr.total_transport_fee_etb, tr.transport_rate_etb_per_m3, 8500) as individual_transport_fee_etb,
+      tr.transport_rate_etb_per_m3,
+      tr.loading_datetime,
+      tr.created_at
+    FROM trips tr
+    WHERE ${whereSql}
+    ORDER BY tr.truck_plate ASC, tr.trip_date DESC, tr.created_at DESC
+  `, params);
+
+  // Map trips to their corresponding truck
+  const tripsByTruckMap = new Map<string, any[]>();
+  for (const trip of allTrips) {
+    if (!tripsByTruckMap.has(trip.truck_id)) {
+      tripsByTruckMap.set(trip.truck_id, []);
+    }
+    tripsByTruckMap.get(trip.truck_id)!.push(trip);
+  }
+
+  const truckGroups = truckGroupsRaw.map(tg => ({
+    ...tg,
+    trips: tripsByTruckMap.get(tg.truck_id) || []
+  }));
+
+  const totalTrucksCount = truckGroups.length;
+  const totalFees = kpiRes?.total_transport_fees_etb || 0;
+  const avgFeePerTruck = totalTrucksCount > 0 ? Number((totalFees / totalTrucksCount).toFixed(2)) : 0;
+  const avgFeePerTrip = (kpiRes?.total_trips || 0) > 0 ? Number((totalFees / kpiRes.total_trips).toFixed(2)) : 0;
+
+  return res.json({
+    kpis: {
+      totalHiredTrucks: totalTrucksCount,
+      totalTrips: kpiRes?.total_trips || 0,
+      totalTransportFeesEtb: totalFees,
+      avgFeePerTruckEtb: avgFeePerTruck,
+      avgFeePerTripEtb: avgFeePerTrip,
+      totalDeliveredM3: kpiRes?.total_delivered_m3 || 0,
+      totalLoadedM3: kpiRes?.total_loaded_m3 || 0,
+      successfulTrips: kpiRes?.successful_trips || 0,
+      partialTrips: kpiRes?.partial_trips || 0,
+      cancelledTrips: kpiRes?.cancelled_trips || 0,
+    },
+    truckGroups,
+    allTripsFlat: allTrips.map(tr => {
+      const parent = truckGroups.find(tg => tg.truck_id === tr.truck_id);
+      return {
+        ...tr,
+        calculated_total_transport_fee_etb: parent?.calculated_total_transport_fee_etb || 0,
+        truck_capacity_m3: parent?.capacity_m3 || null,
+        owner_phone: parent?.owner_phone || null,
+        truck_total_trips: parent?.total_trips || 0,
+        truck_total_delivered_m3: parent?.total_delivered_m3 || 0
+      };
+    })
+  });
+});
+

@@ -271,12 +271,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </p>
             </div>
           </div>
-          <button
-            onClick={() => onNavigateToReports('financial')}
-            className="text-xs font-mono font-semibold text-amber-400 hover:text-amber-300 underline cursor-pointer self-start sm:self-auto"
-          >
-            Open Comprehensive Financial Report →
-          </button>
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={() => onNavigateToReports('truck_transport_pivot')}
+              className="text-xs font-mono font-bold text-emerald-400 hover:text-emerald-300 underline cursor-pointer"
+            >
+              Hired Trucks &amp; Fees Pivot →
+            </button>
+            <button
+              onClick={() => onNavigateToReports('financial')}
+              className="text-xs font-mono font-semibold text-amber-400 hover:text-amber-300 underline cursor-pointer"
+            >
+              Financial Tariffs Report →
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">

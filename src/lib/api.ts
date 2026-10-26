@@ -11,7 +11,8 @@ import {
   SpecificTruckDossier,
   SpecificCompanyDossier,
   FinancialReportData,
-  RouteTariff
+  RouteTariff,
+  TruckTransportPivotData
 } from '../types';
 
 class ApiError extends Error {
@@ -391,5 +392,13 @@ export const api = {
       if (v !== undefined && v !== null && v !== '') params.set(k, String(v));
     });
     return request<FinancialReportData>(`/reports/financial?${params.toString()}`);
+  },
+
+  async getTruckTransportPivotReport(filters: ReportFilterParams = {}): Promise<TruckTransportPivotData> {
+    const params = new URLSearchParams();
+    Object.entries(filters).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') params.set(k, String(v));
+    });
+    return request<TruckTransportPivotData>(`/reports/truck-transport-pivot?${params.toString()}`);
   },
 };
